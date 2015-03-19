@@ -1,0 +1,256 @@
+#include "BigQ.h"
+#include <algorithm>
+
+
+// Create a worker thread, which reads data from input pipe &
+// sorts them into runLength pages and
+// then constructs a priority queue over the sorted runs to merge the data and 
+// output it into the out pipe
+BigQ::BigQ(Pipe &in, Pipe &out, OrderMaker &sort_order, int runLength) {
+	
+	no_runs = 0;
+
+	/*worker_args = {&in, &out, &sort_order, &runLength};	*/
+	if(runLength < 50) runLength = 50;
+	worker_args.input = &in;
+	worker_args.output = &out;
+	worker_args.sort_order = &sort_order;
+	worker_args.run_length = &runLength;
+	
+	pthread_create (&worker_thread, NULL, &TPMMS, (void* )&worker_args);
+
+	//pthread_join(worker_thread,NULL);
+	
+	out.ShutDown();
+}
+
+BigQ::~BigQ (){}
+
+void BigQ::sort_run(Page *p_Page, int num_recs, File& new_file, int& group_idx, OrderMaker *sort_order){
+
+	Record** record_Buffer = new Record*[num_recs];
+
+	int count = 0;
+	int page_Idx =  0;
+
+	do{	
+		record_Buffer[count] = new Record();
+		if((p_Page + page_Idx)->GetFirst(record_Buffer[count]) == 0){
+			(p_Page + page_Idx)->EmptyItOut();	
+			page_Idx++;
+			(p_Page + page_Idx)->GetFirst(record_Buffer[count]);
+			count++;
+		}
+		else
+			count++;
+		
+	} while(count < num_recs);
+
+	(p_Page + page_Idx)->EmptyItOut();
+
+	std::sort(record_Buffer,record_Buffer + num_recs , CustomSort(sort_order));
+
+	int k = 0;
+	int n_errors = 0, n_success = 0;
+	Record *last = NULL, *prev = NULL;
+	ComparisonEngine comp_engine;
+
+	while (k < num_recs) {
+		prev = last;
+		last = record_Buffer[k];
+
+		if (prev && last) {
+			if (comp_engine.Compare (prev, last, sort_order) == 1) {
+				n_errors++;
+			}
+			else {
+				n_success++;
+			}
+		}
+		k++;
+	}
+
+	count = 0;
+	Page *m_pPage = new Page();
+	int isPageDirty = 0;		
+
+	while(count < num_recs){
+
+		if(m_pPage->Append(*(record_Buffer + count))==0){
+			isPageDirty = 0;
+			new_file.AddPage(m_pPage, (off_t) (group_idx++));
+			m_pPage->EmptyItOut();
+			m_pPage->Append(*(record_Buffer + count));
+			count++;
+		}
+		else{
+			isPageDirty = 1;
+			count++;
+		}						
+	}
+
+	if(isPageDirty == 1){
+		new_file.AddPage(m_pPage, (off_t)(group_idx++));	
+	}
+
+	delete m_pPage;
+
+	for(int i=0;i<num_recs;i++){
+		delete *(record_Buffer + i);
+	}
+
+	delete record_Buffer;
+
+}
+
+// TPMMS phase 1 and phase 2 implementation
+void* BigQ::TPMMS(void* arg){
+
+	worker_thread_args *w_th_args = (worker_thread_args *)arg;
+
+	char f_path[] = "random_run_file";
+
+	File new_file;
+	new_file.Open(0, f_path);
+
+	Page *p_Page = new Page[*(w_th_args->run_length)]();	
+
+	Record *temp_rec = new Record();
+
+	int result = 1;
+	int num_recs = 0;	
+	int page_idx = 0;	
+	int group_idx = 1;		
+	int num_runs  = 1;
+
+	//Read record from pipe till the input pipe is empty
+	//append record temp_rec to page at page index and increment the record counter
+	while(result != 0){
+
+		result = w_th_args->input->Remove(temp_rec);
+		//if(result == 0) cout<<"Result is 0"<<endl;
+		if(result != 0){
+			if(( p_Page + page_idx )->Append(temp_rec) == 1){
+				num_recs++;
+			}
+			else if(++page_idx == *(w_th_args->run_length)){
+
+				sort_run(p_Page,num_recs,new_file,group_idx,w_th_args->sort_order);			
+
+				num_runs++;
+
+				page_idx=0;
+				num_recs=0;
+				delete [] p_Page;
+				p_Page = new Page[*(w_th_args->run_length)](); 
+				(p_Page+page_idx)->Append(temp_rec);
+				num_recs++;
+				delete temp_rec;			
+				temp_rec = new Record();
+
+			}
+			else{
+				(p_Page+page_idx)->Append(temp_rec);
+				num_recs++;
+				delete temp_rec;
+				temp_rec = new Record();
+			}
+		}
+		else{
+			sort_run(p_Page,num_recs,new_file,group_idx,w_th_args->sort_order);
+		}
+	}
+
+	cout<<"Num of records read : "<<num_recs<<endl;
+	cout<<"Num of runs : "<<num_runs<<endl;
+
+	delete temp_rec;
+	new_file.Close();
+
+	// Start the phase 2 of the TPMMS Algorithm
+
+	new_file.Open(1,f_path);
+	priority_queue<Record_Wrap* , vector<Record_Wrap*> , CustomSort> m_PQ(CustomSort(w_th_args->sort_order));
+
+	Page *page_buff = new Page[num_runs];
+	Record_Wrap *p_rWrap = new Record_Wrap();
+	Record *p_Record = new Record();	
+
+	for (int i = 0; i < num_runs; i++){
+
+		new_file.GetPage((page_buff+i), (off_t)( 1 + (*w_th_args->run_length)*i));
+		(page_buff + i)->GetFirst(p_Record);
+		(p_rWrap->rec).Consume(p_Record);
+		p_rWrap->run = i;		
+		m_PQ.push(p_rWrap);	
+		p_Record = new Record();
+		p_rWrap = new Record_Wrap;
+	}
+
+	int flags  = num_runs;
+	int next  = 0;
+	int start = 0;
+	int end   = 1;
+	int arr_a[num_runs];
+	int arr_b[num_runs];	
+	int index[num_runs][2];
+
+
+	for(int i = 0;i < num_runs; i++){
+		arr_a[i] = 0;
+		arr_b[i] = 0;
+	}
+	
+	for(int i = 0;i < num_runs - 1; i++){
+		index[i][start] = 1 + ((*(w_th_args->run_length))*i);
+		index[i][end]   = (*(w_th_args->run_length))*(i+1);
+	}
+
+	index[num_runs - 1][start] = 1 + ((*(w_th_args->run_length))*(num_runs - 1));
+	index[num_runs - 1][end] = group_idx - 1;
+
+
+	while(flags != 0){
+
+		Record_Wrap *p_rWrap;
+		p_rWrap = m_PQ.top();
+		m_PQ.pop();
+
+		next = p_rWrap->run;
+
+		w_th_args->output->Insert(&(p_rWrap->rec));
+
+		Record_Wrap *insert = new Record_Wrap;		
+		Record *p_Record = new Record();
+
+		if(arr_a[next] == 0)
+		{
+			if((page_buff + next)->GetFirst(p_Record)==0){
+
+				if( index[next][start]+ (++arr_b[next]) > index[next][end]){
+					flags--;
+					arr_a[next] = 1;				
+				}
+				else{
+					new_file.GetPage(page_buff + next,(off_t)(index[next][start]+arr_b[next]));
+					(page_buff+next)->GetFirst(p_Record);
+					insert->rec = *p_Record;
+					insert->run = next; 	
+					m_PQ.push(insert);					
+				}
+			}
+			else{
+				insert->rec = *p_Record;
+				insert->run = next; 	
+				m_PQ.push(insert);
+			}	
+		}
+	}
+
+	while(!m_PQ.empty()){
+		w_th_args->output->Insert(&((m_PQ.top())->rec));
+		m_PQ.pop();
+	}
+
+	//pthread_exit(NULL); 
+}

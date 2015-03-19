@@ -1,0 +1,40 @@
+Name: Aditya Nain 
+UFID: 1949-4641
+
+DATASET USED : 10M ( All the dataset files are in the DB folder . If you want to use different dataset files then modify the test.cc accordingly)
+
+Folder organization:
+./DB   ----> Contains the *.tbl files. Files are generated with scale factor of 0.01
+./a2-2test  ----> Contains src files, obj files & executables
+./test ----> Contains the unit test
+
+How to build project a2test (the part 1 of the second project):
+1) Unzip the folder
+2) Open a terminal and navigate to P22_Final/a2-2test (Makefile is located in a2-2test folder)
+3) execute
+	make clean
+	make a1test.out
+	make a2test.out
+At this point the executables will be in the ./a2-2test folder
+
+How to run the a2test.out (No need to build, executables are included in the folder)
+1) Navigate to P22_Final/a2-2test folder
+2) execute ./a1test.out 
+	and create the desired Heap DB file
+   The heap db file will be created in the a2-2test folder
+3) execute ./a2test.out
+
+How to build the part 2 of the project ( a22.out) :
+1) Unzip the folder
+2) Open a terminal and navigate to P22_Final/a2-2test (Makefile is located in a2-2test folder)
+3) execute
+	make clean
+	make a22.out
+At this point the executables will be in the ./a2-2test folder
+
+How to run (No need to build, executables are included in the folder)
+1) Navigate to P22_Final/a2-2test folder
+2) execute ./a22.out 
+	and create the desired Heap DB file
+   The heap db file will be created in the a2test folder
+3) execute ./test.out

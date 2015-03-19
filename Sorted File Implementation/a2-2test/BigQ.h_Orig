@@ -1,0 +1,79 @@
+
+#ifndef BIGQ_H
+#define BIGQ_H
+
+#include "Pipe.h"
+#include "File.h"
+#include "Record.h"
+//#include "DBFile.h"
+#include "ComparisonEngine.h"
+#include <pthread.h>
+#include <iostream>
+#include <vector>
+#include <queue>
+
+using namespace std;
+
+class BigQ {
+
+	int no_runs;
+	pthread_t worker_thread;
+	int page_idx;
+	
+	struct worker_thread_args {                                                   		
+		Pipe* input;
+		Pipe* output;
+		OrderMaker *sort_order;
+		int* run_length;	
+	}worker_args;
+
+	typedef struct worker_thread_args worker_thread_args;
+
+	static void* TPMMS(void* arg);
+	static void sort_run(Page*, int, File&, int&, OrderMaker *);
+
+public:
+	BigQ (Pipe &in, Pipe &out, OrderMaker &sort_order, int runLength);
+	~BigQ ();
+};
+
+typedef 
+struct Record_Wrap{	
+	Record rec;
+	int run;
+}Record_Wrap;
+
+
+class CustomSort{
+
+	OrderMaker *sort_order;
+
+public:
+
+	CustomSort(){};
+	~CustomSort(){};
+
+	CustomSort(OrderMaker *order){
+		sort_order = order;
+	}
+
+	bool operator()(Record *r_one, Record *r_two) const{
+
+		ComparisonEngine *comp_engine;
+		if(comp_engine->Compare(r_one,r_two, sort_order) < 0)
+			return true;
+		else
+			return false;
+	}
+
+	bool operator()(Record_Wrap *r_one,Record_Wrap *r_two) const{
+
+		ComparisonEngine *comp_engine;
+		if(comp_engine->Compare(&(r_one->rec),&(r_two->rec), sort_order) < 0)
+			return false;
+		else
+			return true;		
+	}
+};
+
+#endif
